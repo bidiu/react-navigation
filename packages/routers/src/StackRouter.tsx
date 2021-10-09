@@ -175,9 +175,14 @@ export default function StackRouter(options: StackRouterOptions) {
       };
     },
 
-    getStateForRouteNamesChange(state, { routeNames, routeParamList }) {
-      const routes = state.routes.filter((route) =>
-        routeNames.includes(route.name)
+    getStateForRouteNamesChange(
+      state,
+      { routeNames, routeParamList, routeTagChanges }
+    ) {
+      const routes = state.routes.filter(
+        (route) =>
+          routeNames.includes(route.name) &&
+          !routeTagChanges.includes(route.name)
       );
 
       if (routes.length === 0) {

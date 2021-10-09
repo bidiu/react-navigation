@@ -15,6 +15,7 @@ import { isValidElementType } from 'react-is';
 
 import Group from './Group';
 import isArrayEqual from './isArrayEqual';
+import isRecordEqual from './isRecordEqual';
 import NavigationHelpersContext from './NavigationHelpersContext';
 import NavigationRouteContext from './NavigationRouteContext';
 import NavigationStateContext from './NavigationStateContext';
@@ -51,6 +52,11 @@ type NavigatorRoute<State extends NavigationState> = {
   params?: NavigatorScreenParams<ParamListBase, State>;
 };
 
+const isValidTag = (tag: unknown) =>
+  tag === undefined ||
+  typeof tag === 'boolean' ||
+  (typeof tag === 'string' && tag !== '');
+
 /**
  * Extract route config object from React children elements.
  *
@@ -62,7 +68,12 @@ const getRouteConfigsFromChildren = <
   EventMap extends EventMapBase
 >(
   children: React.ReactNode,
-  options?: ScreenConfigWithParent<State, ScreenOptions, EventMap>[0]
+  groupTag?: string,
+  groupOptions?: ScreenConfigWithParent<
+    State,
+    ScreenOptions,
+    EventMap
+  >['options']
 ) => {
   const configs = React.Children.toArray(children).reduce<
     ScreenConfigWithParent<State, ScreenOptions, EventMap>[]
@@ -71,29 +82,50 @@ const getRouteConfigsFromChildren = <
       if (child.type === Screen) {
         // We can only extract the config from `Screen` elements
         // If something else was rendered, it's probably a bug
-        acc.push([
-          options,
-          child.props as RouteConfig<
+
+        if (!isValidTag(child.props.tag)) {
+          throw new Error(
+            `Got an invalid 'tag' prop (${JSON.stringify(
+              child.props.tag
+            )}) for the screen '${
+              child.props.name
+            }'. It must be a non-empty string, boolean or 'undefined'.`
+          );
+        }
+
+        acc.push({
+          tags: [groupTag, child.props.tag],
+          options: groupOptions,
+          props: child.props as RouteConfig<
             ParamListBase,
             string,
             State,
             ScreenOptions,
             EventMap
           >,
-        ]);
+        });
         return acc;
       }
 
       if (child.type === React.Fragment || child.type === Group) {
+        if (!isValidTag(child.props.tag)) {
+          throw new Error(
+            `Got an invalid 'tag' prop (${JSON.stringify(
+              child.props.tag
+            )}) for the group. It must be a non-empty string, boolean or 'undefined'.`
+          );
+        }
+
         // When we encounter a fragment or group, we need to dive into its children to extract the configs
         // This is handy to conditionally define a group of screens
         acc.push(
           ...getRouteConfigsFromChildren<State, ScreenOptions, EventMap>(
             child.props.children,
+            child.props.tag,
             child.type !== Group
-              ? options
-              : options != null
-              ? [...options, child.props.screenOptions]
+              ? groupOptions
+              : groupOptions != null
+              ? [...groupOptions, child.props.screenOptions]
               : [child.props.screenOptions]
           )
         );
@@ -118,7 +150,7 @@ const getRouteConfigsFromChildren = <
 
   if (process.env.NODE_ENV !== 'production') {
     configs.forEach((config) => {
-      const { name, children, component, getComponent } = config[1];
+      const { name, children, component, getComponent } = config.props;
 
       if (typeof name !== 'string' || !name) {
         throw new Error(
@@ -236,20 +268,27 @@ export default function useNavigationBuilder<
   const screens = routeConfigs.reduce<
     Record<string, ScreenConfigWithParent<State, ScreenOptions, EventMap>>
   >((acc, config) => {
-    if (config[1].name in acc) {
+    if (config.props.name in acc) {
       throw new Error(
-        `A navigator cannot contain multiple 'Screen' components with the same name (found duplicate screen named '${config[1].name}')`
+        `A navigator cannot contain multiple 'Screen' components with the same name (found duplicate screen named '${config.props.name}')`
       );
     }
 
-    acc[config[1].name] = config;
+    acc[config.props.name] = config;
     return acc;
   }, {});
 
-  const routeNames = routeConfigs.map((config) => config[1].name);
+  const routeNames = routeConfigs.map((config) => config.props.name);
+  const routeTagList = routeNames.reduce<Record<string, React.Key | undefined>>(
+    (acc, curr) => {
+      acc[curr] = screens[curr].tags.map((key) => key ?? '').join(':');
+      return acc;
+    },
+    {}
+  );
   const routeParamList = routeNames.reduce<Record<string, object | undefined>>(
     (acc, curr) => {
-      const { initialParams } = screens[curr][1];
+      const { initialParams } = screens[curr].props;
       acc[curr] = initialParams;
       return acc;
     },
@@ -260,7 +299,7 @@ export default function useNavigationBuilder<
   >(
     (acc, curr) =>
       Object.assign(acc, {
-        [curr]: screens[curr][1].getId,
+        [curr]: screens[curr].props.getId,
       }),
     {}
   );
@@ -315,7 +354,7 @@ export default function useNavigationBuilder<
     const initialRouteParamList = routeNames.reduce<
       Record<string, object | undefined>
     >((acc, curr) => {
-      const { initialParams } = screens[curr][1];
+      const { initialParams } = screens[curr].props;
       const initialParamsFromParams =
         route?.params?.state == null &&
         route?.params?.initial !== false &&
@@ -371,6 +410,14 @@ export default function useNavigationBuilder<
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentState, router, isStateValid]);
 
+  const previousRouteTagListRef = React.useRef(routeTagList);
+
+  React.useEffect(() => {
+    previousRouteTagListRef.current = routeTagList;
+  });
+
+  const previousRouteTagList = previousRouteTagListRef.current;
+
   let state =
     // If the state isn't initialized, or stale, use the state we initialized instead
     // The state won't update until there's a change needed in the state we have initalized locally
@@ -381,12 +428,20 @@ export default function useNavigationBuilder<
 
   let nextState: State = state;
 
-  if (!isArrayEqual(state.routeNames, routeNames)) {
+  if (
+    !isArrayEqual(state.routeNames, routeNames) ||
+    !isRecordEqual(routeTagList, previousRouteTagList)
+  ) {
     // When the list of route names change, the router should handle it to remove invalid routes
     nextState = router.getStateForRouteNamesChange(state, {
       routeNames,
       routeParamList,
       routeGetIdList,
+      routeTagChanges: Object.keys(routeTagList).filter(
+        (name) =>
+          previousRouteTagList.hasOwnProperty(name) &&
+          routeTagList[name] !== previousRouteTagList[name]
+      ),
     });
   }
 
@@ -522,7 +577,7 @@ export default function useNavigationBuilder<
         ...[
           screenListeners,
           ...routeNames.map((name) => {
-            const { listeners } = screens[name][1];
+            const { listeners } = screens[name].props;
             return listeners;
           }),
         ].map((listeners) => {

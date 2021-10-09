@@ -182,7 +182,13 @@ export type Router<
    */
   getStateForRouteNamesChange(
     state: State,
-    options: RouterConfigOptions
+    options: RouterConfigOptions & {
+      /**
+       * List of routes whose tag has changed even if they still have the same name.
+       * This allows to remove screens declaratively.
+       */
+      routeTagChanges: string[];
+    }
   ): State;
 
   /**

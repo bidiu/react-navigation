@@ -237,10 +237,15 @@ export default function TabRouter({
       );
     },
 
-    getStateForRouteNamesChange(state, { routeNames, routeParamList }) {
+    getStateForRouteNamesChange(
+      state,
+      { routeNames, routeParamList, routeTagChanges }
+    ) {
       const routes = routeNames.map(
         (name) =>
-          state.routes.find((r) => r.name === name) || {
+          state.routes.find(
+            (r) => r.name === name && !routeTagChanges.includes(r.name)
+          ) || {
             name,
             key: `${name}-${nanoid()}`,
             params: routeParamList[name],
